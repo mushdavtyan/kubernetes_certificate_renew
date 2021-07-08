@@ -6,6 +6,9 @@ This tool will renew the kubernetes certificates
 
 ✔ Syntax: scriptTemplate [-k|f|h]
 ✔ options:
+
 ➜  h     Print Usage
+
 ➜  k     kubeconfig file
+
 ➜  f     force renew the certificates

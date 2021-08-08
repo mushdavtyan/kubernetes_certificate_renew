@@ -1,11 +1,12 @@
-#/bin/bash
+#!/bin/bash
 
 : '
-This script will renew the all kubernetes certificates.
+This script will automatically renew all Kubernetes certificates.
 '
 
-minimum_days="7"
-
+minimum_days="10"
+recipient="mushegh.davtyan@synisys.com"
+notification_days=$(expr $minimum_days + 1)
 
 
 
@@ -111,7 +112,9 @@ if [ -z "${kubeconf}" ]; then
 		e_warning "kubeconfig is /etc/kubernetes/admin.conf"
 	    kubeconf=/etc/kubernetes/admin.conf
 	else
-		echo "cannot find kubeconfig"
+		echo "Cannot find kubeconfig"
+		echo "!!!! $HOSTNAME kubernetes certificates renew process gone to fail" | mailx -r "$HOSTNAME-cert-renewer@synisys.com ($HOSTNAME)" -s "ERROR!!!! Cannot find kubeconfig for $HOSTNAME" $recipient
+
 		exit 1
     fi
     sleep 1
@@ -120,21 +123,30 @@ fi
 todayyear=$(date +"%Y")
 todaymonth=$(date +"%m")
 todayday=$(date +"%d")
+yerevan_tommorow_time=`date --date='TZ="Asia/Yerevan" next day'`
+
+
+if ! command -v mailx &> /dev/null
+then
+	e_purple "Installing mailx on the system"
+    yum install -y mailx > /dev/null 2>&1;
+fi
 
 
 backup_creator()
 {
-	backup_directory="$HOME/kubernetes-$todayyear-$todaymonth-$todayday"
+	e_success "Starting the backup process"
+	backup_directory="$HOME/kubernetes-backup/$todayyear-$todaymonth-$todayday"
 	mkdir -p $backup_directory
 	\cp -rp /etc/kubernetes $backup_directory/kubernetes
 	\cp -rp /var/lib/kubelet $backup_directory/kubelet
+	e_purple "Backup files are stored at $backup_directory"
 }
 
 
 kubelet_restart()
 {
-
-	e_warning "restarting the kubelet service"
+	e_purple "restarting the kubelet service"
 	systemctl daemon-reload && systemctl restart kubelet
 	sleep 5
     servicecheck=`systemctl is-active kubelet`
@@ -148,9 +160,10 @@ kubelet_restart()
 
 		if [[ $checkcount != 0 ]]
 		then 
-			e_warning "Waiting for kubelet to become active. Try count $checkcount" && sleep 3
+			e_success "Waiting for kubelet to become active. Try count $checkcount" && sleep 3
 		else
 		    e_error "Kubelet state is down. Exiting !!!"
+		    echo "!!!! $HOSTNAME kubernetes certificates renew process gone to fail" | mailx -r "$HOSTNAME-cert-renewer@synisys.com ($HOSTNAME)" -s "ERROR!!!! Kubelet state is down on $HOSTNAME. after renewing. Check immediately." $recipient
 		    exit 1
 		fi
 		done
@@ -188,9 +201,19 @@ kubeconfig_checker()
     	sleep 1
 	else
         e_error "Kubeconfig is not working. Exiting...."
+        echo "!!!! $HOSTNAME kubernetes certificates renew process gone to fail" | mailx -r "$HOSTNAME-cert-renewer@synisys.com ($HOSTNAME)" -s "ERROR!!!! Kubeconfig is not working for $HOSTNAME" $recipient
         exit 1
 	fi
 }
+
+apiserver_checker()
+{
+    e_success "Restarting control plane pods managed by kubeadm"
+    /usr/bin/docker ps -af 'name=k8s_POD_(kube-apiserver|kube-controller-manager|kube-scheduler|etcd)-*' -q | /usr/bin/xargs /usr/bin/docker rm -f > /dev/null 2>&1;
+	e_success "Waiting for apiserver to be up again"
+	until printf "" 2>>/dev/null >>/dev/tcp/127.0.0.1/6443; do sleep 1; done
+}
+
 
 kube_cert_updater()
 {
@@ -230,6 +253,7 @@ kube_cert_updater()
 	rm -rf /var/lib/kubelet/pki/kubelet.key
 	rm -rf /var/lib/kubelet/pki/kubelet.crt
     kubelet_checker
+    apiserver_checker
     if [[ "$expired" != "yes" ]]; then
     	kubeconfig_checker
     fi
@@ -238,20 +262,31 @@ kube_cert_updater()
     then
     	e_success "All certificates have been renewed"
     	e_success "Certificates will expire after $days days"
-    	e_warning "Rebooting the server"
-    	shutdown -r > /dev/null 2>&1;
+    	echo "SUCCESS!!! $HOSTNAME kubernetes certificates have been renewed successfully" | mailx -r "$HOSTNAME-cert-renewer@synisys.com ($HOSTNAME)" -s "SUCCESS!!! $HOSTNAME kubernetes certificates has been renewed" $recipient > /dev/null 2>&1;
     	exit 0
+    else
+    	echo "ERROR!!!! $HOSTNAME kubernetes certificates renew process gone to fail" | mailx -r "$HOSTNAME-cert-renewer@synisys.com ($HOSTNAME)" -s "ERROR!!!! Could'nt renew $HOSTNAME kubernetes certificates" $recipient > /dev/null 2>&1;
     fi	
 }
 
 days=$(residual_days_counter_new)
+
+if [[ "$days" ==  "$notification_days" ]]
+then
+	echo "ATTENTION ..  $HOSTNAME certificates will be renewed tommorow at $yerevan_tommorow_time Yerevan time" | mailx -r "$HOSTNAME-cert-renewer@synisys.com ($HOSTNAME)" -s "Tommorow $HOSTNAME kubernetes certificates will renew" $recipient
+    e_arrow "There is still $days days to certificate expiration..."
+	echo \n
+	e_header "Certificates will renew tomorrow at the same time"
+	exit 0
+fi
+
+
 if [[ "$days" -lt "$minimum_days" ]] || [[ "$force" == "yes" ]]
 then
 	kube_cert_updater
 else
-	e_arrow "There is still $days to certificate expiration"
+	e_arrow "There is still $days days to certificate expiration"
 	echo \n
 	e_header "No need to update certificates at this moment"
-	echo ""
 	exit 0
 fi

@@ -8,6 +8,7 @@ This tool will renew the kubernetes certificates
 
 ✔ options:
 
+
 ➜  h     Print Usage
 
 ➜  k     kubeconfig file
